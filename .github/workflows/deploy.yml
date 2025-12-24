@@ -8,10 +8,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest  # Changed from ubuntu-20.04 (EOL since April 2025) to latest for newer tools/NDK support
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4  # Update from v3 to latest v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for tagging
 
       - name: Install deps
         run: ./ci_install.sh
@@ -48,12 +50,22 @@ jobs:
           cd deps && zip -9r ../deps-lite.zip -- */!(Irrlicht)
           ls -lh ../deps-lite.zip
 
-      - name: Upload and tag
-        uses: pyTooling/Actions/releaser@main  # Use a tagged version (latest stable as of now) instead of @main for reliability
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: 'latest'  # This force-updates the 'latest' tag and pre-release with new ZIPs
-          files: |
-            deps.zip
-            deps-lite.zip
+      - name: Update latest tag and release
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Force-move the 'latest' tag to current commit
+          git tag -fa latest -m "Latest build"
+          git push -f origin latest
+
+          # Get or create the release ID for tag 'latest' (pre-release)
+          RELEASE_ID=$(gh api repos/{owner}/{repo}/releases/tags/latest --jq '.id // empty')
+          if [ -z "$RELEASE_ID" ]; then
+            RELEASE_ID=$(gh release create latest --title "Latest Build" --notes "Automated latest deps build" --prerelease deps.zip deps-lite.zip --target $GITHUB_SHA | grep -o 'id: [0-9]*' | cut -d' ' -f2)
+          else
+            # Delete existing assets (to replace them)
+            gh api repos/{owner}/{repo}/releases/$RELEASE_ID/assets --jq '.[].id' | xargs -I {} gh api -X DELETE repos/{owner}/{repo}/releases/$RELEASE_ID/assets/{}
+            # Upload new assets
+            gh release upload latest deps.zip deps-lite.zip --clobber
+          fi
